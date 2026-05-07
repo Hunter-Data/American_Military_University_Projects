@@ -1,0 +1,323 @@
+---
+title: "Final Business Analysis Churn"
+author: "Hunter Davis"
+date: "2025-05-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Final Busines Analysis Churn Data
+
+```{r Load, echo=TRUE, results='hide', warning=FALSE}
+# Load required libraries
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(factoextra)
+library(FactoMineR)
+```
+
+```{r EDA}
+# 1. Data Loading and Exploration --------------------------------------------
+
+data <- read.csv("~/AMU/Dats201/Week 8/Telecom_Customer_Churn_Dataset.csv")
+str(data)
+summary(data)
+head(data)
+colnames(data)
+colSums(is.na(data))
+
+data$CustomerID <- NULL
+
+# Convert categorical variables to factors
+data$HasTechSupport <- as.factor(data$HasTechSupport)
+data$IsSeniorCitizen <- as.factor(data$IsSeniorCitizen)
+data$Churn <- as.factor(data$Churn)
+data$NumOfProducts <- as.factor(data$NumOfProducts)
+
+# Data Visualization
+ggplot(data, aes(x=Churn, fill=Churn)) + 
+  geom_bar() + 
+  ggtitle("Churn Distribution")
+
+ggplot(data, aes(x=MonthlyCharges, fill=Churn)) +
+  geom_density(alpha=0.5) +
+  ggtitle("Monthly Charges by Churn Status")
+
+numeric_vars <- c("Age",
+                  "AnnualIncome",
+                  "MonthlyCharges",
+                  "TotalCharges",
+                  "TenureMonths")
+
+data %>%
+  pivot_longer(cols = all_of(numeric_vars), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = Churn, y = value, fill = Churn)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free_y") +
+  labs(title = "Numeric Variables by Churn Status",
+       x = "Churn",
+       fill = "Churn Status")
+```
+
+### Key Findings (EDA):
+
+#### EDA
+
+* No missing values (colSums(is.na(data)) = 0 for all columns)
+* Balanced Churn rate: 51% Yes, 49% No
+* Numeric variable ranges:
+  + Age: 18-69 years (mean 43.82)
+  + Annual Income: $30232-$79971 (mean $54910)
+  + Monthly Charges: $30.01-$119.85 (mean $74.95)
+  + Total Charges: $500-$7991.70 (mean $4239)
+  + Tenure: 1-71 Months (mean 35.89)
+<br>
+
+#### Preprocessing
+
+* Converted categorical variables to factors:
+  + HasTechSupport (No/Yes)
+  + IsSeniorCitizen (0/1)
+  + Churn (No/Yes)
+  + NumOfProducts (1-4)
+
+```{r Predict}
+# 2. Predictive Modeling --------------------------------------------------
+
+# Split data
+set.seed(1)
+trainIndex <- createDataPartition(data$Churn, p=0.7, list=FALSE)
+train <- data[trainIndex,]
+test <- data[-trainIndex,]
+
+# Logistic Regression
+logit_model <- glm(Churn ~ ., data=train, family="binomial")
+summary(logit_model)
+
+# Decision Tree
+tree_model <- rpart(Churn ~ ., data=train, method="class")
+summary(tree_model)
+rpart.plot(tree_model, main="Decision Tree for Customer Churn")
+
+```
+
+### Key findings (Model Evaluation):
+
+#### Logistic Regression
+
+* Significant predictors (p<0.05)
+  + Annual Income (coefficient = -1.366e-05, p = 0.0103)
+  + Is Senior Citizen (coefficient = -0.3274, p = 0.0326)
+* Annual income: 
+  + Estimate = -1.366e-05 (log-odds per $1)
+  + For $10,000 increase: -1.366e-05 × 10,000 = -0.1366 (log-odds)
+  + Odds Ratio = exp(-0.1366) = 0.872
+  + Interpretation: Each $10K income increase leads to a 12.8% reduction in churn odds (1 - 0.872 = 0.128)
+* Is Senior Citizen:
+  + Estimate = 0.3274 (log-odds)
+  + Odds Ratio = exp(0.3274) = 1.387
+  + Interpretation: Seniors have 38.7% higher churn odds than non-seniors
+* Non-Significant Predictors (p<0.05)
+  + Age (p=0.6405): No significant age effect after accounting for other factors
+  + Monthly Charges (p=0.5611): Pricing not significant when income is considered
+  + Tenure Months (p=0.7373): Surprisingly, tenure length doesn't independently predict churn
+  + Number of Products: All categories (2,3,4) vs baseline (1) show no significant differences (p=0.75, 0.74, 0.35)
+  + Tech Support (p=0.9094): No protective effect found
+<br>
+The logistic Model shows moderate performance with an AIC of 980.38 and residual deviance of 958.38 on 690 degrees of freedom.
+<br>
+
+#### Decision Tree
+
+* Key Splits
+  + Primary Split:
+    + Annual Income < $48,664 (Right branch: 253 obs, 57.7% churn)
+    + Higher-income customers (>$48K) have lower churn risk (45.1% churn)
+  + Secondary Split:
+    + Age < 24.5: Younger customers in high-income group show 64% retention
+    + Total Charges < $931: Customers with lower cumulative spending churn more
+    + Monthly Charges < $104: Pricing sensitivity appears at this threshold
+  + Deep Splits:
+    + Node 15: Customers with Age >=53.5 & Income <$46.5K have 85.7% churn rate
+    + Node 232: Customers with Age <56.5 & Total Charges <$2,944 show 90% retention
+<br>
+* Variable importance:
+  + Total Charges (36%)
+  + Annual Income (32%)
+  + Age (19%)
+  + Monthly Charges (10%)
+  + Tenure (2%)
+  
+
+
+```{r Resample}
+# Resampling Methods ------------------------------------------------------
+
+# Set up cross-validation
+ctrl <- trainControl(method = "cv",
+                     number = 10,
+                     savePredictions = TRUE,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+
+# Logistic Regression with CV
+logit_cv <- train(Churn ~ ., data=train,
+                  method = "glm",
+                  family = "binomial",
+                  trControl = ctrl,
+                  metric = "ROC")
+print(logit_cv)
+
+# Decision Tree with CV
+tree_cv <- train(Churn ~ ., data=train,
+                 method = "rpart",
+                 trControl = ctrl,
+                 tuneLength = 10,
+                 metric = "ROC")
+print(tree_cv)
+plot(tree_cv, main="Decision Tree Tuning Results")
+
+# Model comparison
+models <- list(Logistic = logit_cv, DecisionTree = tree_cv)
+resamples <- resamples(models)
+summary(resamples)
+bwplot(resamples, metric = "ROC", main="Model Comparison by ROC")
+
+```
+
+### Key findings (Model resampling):
+
+#### Cross-validation Results
+
+* Logistic Regression
+  + ROC: 0.515
+  + Sensitivity: 0.530
+  + Specificity: 0.451
+* Decision Tree (optimal cp = 0.030)
+  + ROC: 0.546
+  + Sensitivity: 0.604
+  + Specificity: 0.489
+  
+#### Comparison
+
+The decision tree model shows a better overall performance with a higher ROC, sensitivity, and specificity. The box plot reinforces this by visualizing each models spread and mean value.
+
+```{r Unsupervised}
+# Unsupervised Learning ---------------------------------------------------
+
+# PCA Analysis
+pca_data <- data %>% select(all_of(numeric_vars)) %>% scale()
+pca_result <- PCA(pca_data, graph=FALSE)
+summary(pca_result)
+
+# PCA Visualization
+fviz_eig(pca_result, addlabels=TRUE, main="Scree Plot - Variance Explained")
+fviz_pca_var(pca_result, col.var="contrib",
+             gradient.cols=c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel=TRUE, title="Variable Contributions to PCs")
+
+# K-means Clustering with PCA components
+pca_scores <- as.data.frame(pca_result$ind$coord)
+colnames(pca_scores) <- paste0("PC", 1:ncol(pca_scores))
+
+# Determine optimal clusters
+fviz_nbclust(pca_scores, kmeans, method="wss")+
+  geom_vline(xintercept = 3, linetype = 2) +
+
+# Perform clustering
+set.seed(123)
+kmeans_result <- kmeans(pca_scores, centers=3, nstart=25)
+data$Cluster <- as.factor(kmeans_result$cluster)
+
+# Visualize clusters
+fviz_cluster(kmeans_result, data=pca_scores, 
+             geom="point",
+             ellipse.type="convex",
+             palette="jco",
+             main="Customer Segments from PCA")
+```
+
+```{r Insights}
+# Analysis and Insight ----------------------------------------------------
+
+# Cluster analysis
+cluster_summary <- data %>%
+  group_by(Cluster) %>%
+  summarise(
+    Count = n(),
+    ChurnRate = mean(Churn == "Yes"),
+    AvgMonthlyCharge = mean(MonthlyCharges),
+    AvgTenure = mean(TenureMonths),
+    AvgAge = mean(Age),
+    AvgIncome = mean(AnnualIncome)
+  )
+
+print(cluster_summary)
+
+# Key churn factors
+varImp(logit_cv)
+varImp(tree_cv)
+```
+
+### Key findings (PCA and K-means):
+
+#### Principal Component Analysis
+
+* The scree plot showed the first two components explained most variance
+* Variable contribution plot indicated:
+  + PC1 strongly influenced by tenure and charges
+  + PC2 influenced by monthly charges, income, and age
+
+#### K-means Clustering
+  
+* Cluster 1 (30.1% of customers):
+  + Highest tenure (47.9 months)
+  + Older customers (avg age 50.1)
+  + Moderate churn rate (47.5%)
+* Cluster 2 (36.4% of customers):
+  + Younger customers (avg age 29.1)
+  + Moderate tenure (32.6 months)
+  + Highest churn rate (51.1%)
+* Cluster 3 (33.5% of customers):
+  + Oldest customers (avg age 54.2)
+  + Shortest tenure (28.7 months)
+  + High monthly charges ($79.80)
+  + Moderate churn rate (49.9%)
+    
+## Summary and Recomendations
+
+### Critical Churn Factors
+
+* Financial Factors:
+  + Lower annual income customers are more likely to churn
+  + Customers with higher monthly charges show higher churn tendencies
+* Demographic Factors:
+  + Senior citizens have significantly higher churn risk
+  + Younger customers (Cluster 2) show the highest churn rates
+* Service Factors:
+  + Number of products didn't show strong predictive power
+  + Tech support availability wasn't a significant factor
+
+### Strategic Recommendations
+
+* Targeted Retention Programs:
+  + Implement income-based pricing strategies for lower-income customers
+  + Create senior citizen-specific service plans with added benefits
+  + Develop loyalty programs for younger customers (Cluster 2)
+* Service Optimization:
+  + Review pricing structure for high monthly charge customers
+  + Analyze why high-tenure customers (Cluster 1) still churn at 47.5% rate
+* Proactive Engagement:
+  + Implement early warning systems using the decision tree model
+  + Focus outreach on customers matching high-risk cluster profiles
+* Further Research:
+  + Investigate why tech support isn't reducing churn as expected
+  + Collect additional data on service quality and customer satisfaction
+  + Explore more complex models to improve predictive accuracy
+
+The analysis suggests that a segmented, data-driven approach focusing on financial and demographic factors will be most effective in reducing customer churn for this telecom company.
