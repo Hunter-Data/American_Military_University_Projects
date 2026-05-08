@@ -1,0 +1,316 @@
+---
+title: "DATS301 Final Exam"
+author: "Hunter Davis"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dplyr)
+require(knitr)
+require(readr)
+require(rstatix)
+require(MASS)
+```
+
+# Dats301 Final Exam
+
+## Load The Data (Part 0):
+```{r}
+data <- read_csv("//DAVISFAMNAS/personal_folder/AMU/DATS301/Rcode/horse_crab.csv")
+```
+## Data Summary (Part 1):
+```{r}
+colnames(data)
+str(data)
+colSums(is.na(data))
+summary(data)
+
+par(mfrow = c(2, 2))
+
+boxplot(data$color)
+boxplot(data$spine)
+boxplot(data$width)
+boxplot(data$satell)
+boxplot(data$weight)
+
+hist(data$color)
+hist(data$spine)
+hist(data$width)
+hist(data$satell)
+hist(data$weight)
+
+data |> 
+identify_outliers(width)
+
+data |> 
+identify_outliers(satell)
+
+data |> 
+identify_outliers(weight)
+```
+
+From the summary of our data on Horseshoe crabs we can see that we have 173 observation with five different features. All features are of the numeric data type with no missing data values in any of the cells. There is a total of three outliers across the features width, satellite, and weight with one observation appearing in both the width and weight features. The non-categorical features (width, satellite, weight) all have varying degrees of right leaning skewness. Due to the presence of outliers the non-categorical features median values are below the mean value. The width and weight features follow roughly a normal distribution while the satellite distribution is heavily weighted towards the lower counts. 
+
+## Feature Standardization (Part 2a):
+```{r}
+data_stand <- data |> 
+  mutate(width_center=scale(width), weight_center=scale(weight))
+
+head(data_stand)
+
+summary(data_stand[6:7])
+```
+
+Feature standardization is important in data science because it allows us to conduct analysis on data of different scales by adjusting them to have a similar scale for better comparison. Standardization additionally deals with outliers and making them less impact on model performance without the need to eliminate those observations which could lead to lost insights during analysis.
+
+## Removing and Renaming features (Part 2b):
+```{r}
+data_rename <- data_stand |> 
+  dplyr::select(color, spine, width_center, satell, weight_center) |> 
+  dplyr::rename(width = width_center, weight = weight_center)
+
+head(data_rename)
+```
+
+## Satellite Counts (Part 2c):
+```{r}
+boxplot(
+  weight~satell,
+  data = data_rename,
+  main='Weight Distribution Over Satellites'
+  )
+```
+
+From the boxplot we can see that for horseshoe crabs that are lighter in weight tend to have fewer satellites then crabs of heavier weights. This does not mean that the heaviest crabs have the most satellites because we can see that those crabs with the highest satellite counts fall within a narrow range (roughly -0.25 to 1.2 on scaled weight). Given that there is no specific pattern of increasing or decreasing average weight to number of satellites it can be safe to say that crabs falling within a specific weight range have an increased likelihood of having more satellites but are not guaranteed such an outcome. The random spread of the number of satellites to crabs weight leads me to believe that weight has some effect up to a certain point and once a crab passes the upper limit there is less of a chance of increasing the number of satellites. The wide spreads of crabs weights in the lower number of satellites compared to the higher number of satellites indicates a larger number of crabs have fewer satellites while a small part of the population maintains a large number of satellites. If the number of satellites indicates the success of a crab then we could say from this plot that crabs that are too light or too heavy are less successful then those that fall within a specific weight class.
+
+## Full Model (Part 3a):
+```{r}
+set.seed(42)
+model_full <- glm(satell~weight*width+color*spine+weight*color+weight*spine+width*color+width*spine,
+                 family = 'poisson',
+                 data = data_rename
+                 )
+summary(model_full)
+```
+
+The full model here shows what a "perfect" model would look like. This captures all the data points observed within the dataset as well as the noise present. This would be a classic overfitting problem where the model performs amazingly on the training data but poorly on test data. This also serves as a benchmark model to compare with simpler models later to determine which model performs best. Additionally we can use the full model dispersion parameter to check for overdispersion. 
+
+We can see that all the features of the full model (excluding the intercept) have no statistical significance in predicting the number of satellites. Calculating the deviance dispersion (residual deviance/residual degrees of freedom) we get 3.29 which is greater than 1. This indicates that there is overdispersion, roughly 3.3 times greater then assumed. 
+
+## Stepwise Selection (Part 3b):
+```{r}
+stepAIC(model_full,
+        direction = "backward",
+        trace = TRUE)
+```
+The backward selection starts with the full model and iterates through subsequent models while removing features that reduce the AIC value the most. The first step away from the full model removes the interaction term between weight and color bringing the AIC from 909.48 to 907.48. With a total of five steps away from the full model the AIC drops from 909.48 to 902.11 removing the following features in order of decreasing AIC value:
+
+* weight:color
+* weight:spine
+* width:spine
+* spine
+
+Additionally we can check the dispersion of the final model with the following code to see if the model has improved its fit of the data.
+```{r}
+model_final <- glm(formula = satell ~ weight + width + color + weight:width + width:color,
+                   family = "poisson",
+                   data = data_rename)
+
+dispersion <- deviance(model_final) / df.residual(model_final)
+print(dispersion)
+```
+Here we see a slight reduction of the dispersion value from 3.29 to 3.20, which which indicates that there is still overdispersion present in the model.
+
+## Full vs. Final Model Deviance (Part 3c):
+
+The full model residual deviance (532.19) and degrees of freedom (162) both had an increase in their values (534.82, 167 respectively) for the final model selected with the stepAIC() function. Although there was a change in residual deviance and residual df the dispersion value remained roughly the same which indicates that the model has actually gotten worse at fitting the data.
+
+## Full vs. Final AIC (Part 3d):
+
+The full models AIC (909.48) decreases when run through the stepAIC() function resulting in the final model AIC (902.11) indicating that the model that drops the four features (weight:spine, weight:color, width:spine, and spine) provide the optimal balance between model complexity and fit of the data. This doesn't mean that all features selected have statistically significant p-values, just that the final model has the best balance between accuracy and computational requirements. We can see this better by examining the summary of the final model.
+```{r}
+summary(model_final)
+```
+This shows that the width feature isn't strongly significant to the prediction of number of satellites, but because removal would worsen the AIC this is the optimal model when considering a balanced approach.
+
+## Removing Width in Final Model (Part 3e):
+
+First off, removing the width feature from the model would also require the removal of the interaction term between width, color, and weight leaving the model only two features (weight and color). 
+```{r}
+model_drop <- glm(formula = satell ~ weight  + color,
+                   family = "poisson",
+                   data = data_rename)
+summary(model_drop)
+
+dispersion_drop <- deviance(model_drop) / df.residual(model_drop)
+print(dispersion_drop)
+```
+
+Now it's obvious that removing width from the final model wouldn't improve the models performance because it would increase the AIC value from 902.11 to 914.1 which indicates a worsening balance between fit and complexity. Examining the residual deviance and df shows the the dispersion increases as well, to 3.25, indicating that the model has indeed gotten worse at fitting the data. Ultimately the lack of fit that all our models are showing indicates that another type of model would be a better choice for working with the horseshoe crab dataset as it currently exists.
+
+## Binary Conversion (Part 4a):
+
+```{r}
+summary(data_rename)
+
+data_fact <- data_rename
+
+# Zero is 2 or less satellites, One indicates 3 or more satellites
+data_fact$satell <- factor(ifelse(data_fact$satell<3, 0, 1))
+
+summary(data_fact)
+head(data_fact)
+```
+
+Since I've converted over the satellite feature into a binary outcome it would be ideal to use machine learning algorithms that deal with binary data. Logistic regression (logit) model is a great starting point, but deals with linear relationships of the log-odds which the crab dataset might not have. Decision tree or random forest models might be the proper starting point if the data is truly non-linear. Finally, if none of these models produce a model that fits the data well XGBoosting or Support Vector Machines (SVM) Model could be the next step, albeit at a greater computational cost.
+
+## Binary Full Model (Part 4b):
+
+```{r}
+full_mod <- glm(satell ~ weight*width+color*spine+weight*color+weight*spine+width*color+width*spine,
+                data = data_fact,
+                family = binomial(link = "logit")
+                )
+
+summary(full_mod)
+
+dispersion_bino <- deviance(full_mod) / df.residual(full_mod)
+print(dispersion_bino)
+```
+Interestingly we have three features that have a slight statistical significance:
+
+* weight (p = 0.0525)
+* width (p = 0.0938)
+* width:color (p = 0.0697)
+
+The AIC (223.92) and dispersion (1.25) of the logit model is already an improvement over the poisson regression model used earlier in part 3a - 3e. This indicates that this model fits the data much better and that the balance between fit and model complexity has improved.
+
+
+## Backwards Elimination Logit Model (Part 4c):
+
+```{r}
+stepAIC(full_mod,
+        direction = "backward",
+        trace = TRUE)
+```
+
+After six iterations the stepAIC() function has reduced the AIC value from 223.92 to 214.6. This outcome is achieved by removing the following features:
+
+* color:spine
+* weight:spine
+* width:spine
+* spine
+* weight:width
+
+This leaves us with a mode that only contain the features that create the optimal balance between fit and model complexity (weight, width, color, width:color, weight:color).
+
+## Goodness of fit test (Part 4d):
+
+```{r}
+reduced_model <- glm(satell ~ weight + width + color + weight:color + width:color,
+                     family = binomial(link = "logit"),
+                     data = data_fact
+                     )
+
+# Perform the Likelihood Ratio Test
+lrt_result <- anova(reduced_model, full_mod, test = "LRT")
+
+# Print the result
+print(lrt_result)
+```
+
+After examining the output of the Likelihood ratio test to see which model would be the better choice. The p-value of the full model (0.9847) is much larger then the critical value (a = 0.05) which indicates that there is not significant evidence that the full model is better then the reduced model. Based on this evidence it would be prudent to use the reduced model moving forward in the analysis.
+
+## AIC Comparison (Part 4e):
+
+```{r}
+cat("Full Model AIC: \t", full_mod$aic)
+cat("\nReduced Model AIC: \t", reduced_model$aic)
+```
+It's clear that based on AIC values between the two models that the reduced model being 9 units smaller has the more ideal performance. 
+
+## Selected Model Comparison 3b and 4b (Part 4f):
+
+```{r}
+# Perform the Likelihood Ratio Test
+lrt_result2 <- anova(model_final, reduced_model, test = "LRT")
+
+# Print the result
+print(lrt_result2)
+
+cat("\n3b Model AIC: \t", model_final$aic)
+cat("\n4b Model AIC: \t", reduced_model$aic)
+```
+Yet again when comparing the two final models that are selected using the stepAIC() function for the different models in part 3b and 4b shows that the 4b model would be preferable compared to the 3b model if we solely base our decision on the AIC value. Interestingly enough both models have the same number of features (5) with a slight variation in the interaction variables (3b: weight x width, and 4b: weight x color). The LRT result really shouldn't be used here to compare but it helps visualize what the models features are in a condense format.
+
+## Table Questions (Part 5):
+
+```{r}
+kable(table(data_rename$color, data_rename$spine))
+```
+
+### Question 1:
+##### What is the probability of a having color 3 given that the related spine is 1.
+
+We're looking for the probability that the crabs color is "color 3" when they are also "spine 1". P(color = 3| spine = 1).
+
+```{r}
+# Total number of crabs with spine = 1.
+spine1 <-  9 + 24 + 3 + 1
+
+# Value of crabs with color = 3 and also spine = 1
+col3_spine1 <- 24
+
+# P(color = 3| spine = 1)
+prob_col3_spine1 <- col3_spine1 / spine1
+
+cat("The probability that a horseshoe crab has the color 
+    designation 3 given they're spine designation 1 is: ",
+    round(prob_col3_spine1, 4)*100,"%")
+```
+
+### Question 2:
+##### What is the probability of having a spine of 2 given that related color is 4.
+
+P(spine = 2| color = 4).
+
+```{r}
+# Total number of crabs with color = 4.
+col4 <-  3 + 4 + 37
+
+# Value of crabs with spine = 2 and also color = 4
+spine2_col4 <- 4
+
+# P(color = 3| spine = 1)
+prob_spine2_col4 <- spine2_col4 / col4
+
+cat("The probability that a horseshoe crab has the spine 
+    designation 2 given they're color designation 4 is: ",
+    round(prob_spine2_col4, 4)*100,"%")
+```
+\newpage
+## Equivalency (Part 6):
+
+Answer on following page.
+
+![Equivalent Check]("//DAVISFAMNAS/personal_folder/AMU/DATS301/Week 8/equivalent.pdf"){width=100%}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
